@@ -36,7 +36,9 @@ function hasDateConflict(rentals, newRental, excludeId = null) {
 }
 
 // 定义API基础URL
-const API_BASE_URL = 'http://localhost:3000/api';
+const API_BASE_URL = process.env.NODE_ENV === 'production' 
+  ? '/api' 
+  : 'http://localhost:3000/api';
 export { API_BASE_URL };
 
 export const dataService = {

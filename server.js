@@ -23,7 +23,9 @@ let db;
 async function setupDatabase() {
   // 打开数据库连接
   db = await open({
-    filename: join(__dirname, 'camera_rental.db'),
+    filename: process.env.NODE_ENV === 'production'
+      ? '/data/camera_rental.db'
+      : join(__dirname, 'camera_rental.db'),
     driver: sqlite3.Database
   });
 

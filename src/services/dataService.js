@@ -35,184 +35,207 @@ function hasDateConflict(rentals, newRental, excludeId = null) {
   })
 }
 
+// 定义API基础URL
+const API_BASE_URL = 'http://localhost:3000/api';
+export { API_BASE_URL };
+
 export const dataService = {
   // 获取所有相机
-  getCameras() {
+  async getCameras() {
     try {
-      return JSON.parse(localStorage.getItem('cameras') || '[]')
+      const response = await fetch(`${API_BASE_URL}/cameras`);
+      if (!response.ok) {
+        throw new Error('获取相机失败');
+      }
+      return await response.json();
     } catch (error) {
-      console.error('Error reading cameras:', error)
-      return []
+      console.error('Error fetching cameras:', error);
+      return [];
     }
   },
 
   // 添加相机
-  addCamera(cameraData) {
+  async addCamera(cameraData) {
     if (!cameraData.name || typeof cameraData.name !== 'string') {
-      throw new Error('相机名称无效')
+      throw new Error('相机名称无效');
     }
     
-    const cameras = this.getCameras()
-    // 简化名称处理
-    const normalizedName = cameraData.name.trim()
+    const response = await fetch(`${API_BASE_URL}/cameras`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        name: cameraData.name,
+        link: cameraData.link || ''
+      })
+    });
     
-    // 不区分大小写的重复检查
-    if (cameras.some(c => c.name.toLowerCase() === normalizedName.toLowerCase())) {
-      throw new Error('相机型号已存在')
+    if (!response.ok) {
+      const data = await response.json();
+      throw new Error(data.error || '添加相机失败');
     }
+    
+    return await response.json();
+  },
 
-    const newId = Math.max(...cameras.map(c => c.id), 0) + 1
-    const newCamera = {
-      id: newId,
-      name: normalizedName,
-      link: cameraData.link || '',
+  // 更新相机
+  async updateCamera(id, updates) {
+    const response = await fetch(`${API_BASE_URL}/cameras/${id}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(updates)
+    });
+    
+    if (!response.ok) {
+      const data = await response.json();
+      throw new Error(data.error || '更新相机失败');
     }
-    cameras.push(newCamera)
-    localStorage.setItem('cameras', JSON.stringify(cameras))
-    return newCamera
+    
+    return await response.json();
   },
 
   // 删除相机
-  deleteCamera(id) {
-    const cameras = this.getCameras()
-    const index = cameras.findIndex(c => c.id === id)
-    if (index > -1) {
-      cameras.splice(index, 1)
-      localStorage.setItem('cameras', JSON.stringify(cameras))
-      
-      // 同时删除该相机的所有预约记录
-      const rentals = this.getRentals()
-      const updatedRentals = rentals.filter(rental => rental.cameraId !== id)
-      localStorage.setItem('rentals', JSON.stringify(updatedRentals))
-      
-      return true
+  async deleteCamera(id) {
+    const response = await fetch(`${API_BASE_URL}/cameras/${id}`, {
+      method: 'DELETE'
+    });
+    
+    if (!response.ok) {
+      const data = await response.json();
+      throw new Error(data.error || '删除相机失败');
     }
-    return false
+    
+    return true;
   },
 
   // 获取所有预约
-  getRentals() {
+  async getRentals() {
     try {
-      return JSON.parse(localStorage.getItem('rentals') || '[]')
+      const response = await fetch(`${API_BASE_URL}/rentals`);
+      if (!response.ok) {
+        throw new Error('获取预约失败');
+      }
+      const data = await response.json();
+      if (!Array.isArray(data)) {
+        console.error('API返回的租赁数据不是数组:', data);
+        return [];
+      }
+      
+      return data.map(rental => ({
+        id: rental.id,
+        cameraId: rental.camera_id,
+        startDate: rental.start_date,
+        endDate: rental.end_date,
+        notes: rental.notes,
+        color: rental.color,
+        status: rental.status,
+        cameraName: rental.camera_name
+      }));
     } catch (error) {
-      console.error('Error reading rentals:', error)
-      return []
+      console.error('Error fetching rentals:', error);
+      return [];
     }
   },
 
   // 添加预约
-  addRental(rental) {
+  async addRental(rental) {
     // 验证输入
     if (!rental.cameraId || !rental.startDate || !rental.endDate) {
-      throw new Error('预约信息不完整')
+      throw new Error('预约信息不完整');
     }
     
-    // 验证日期
-    const start = new Date(rental.startDate)
-    const end = new Date(rental.endDate)
-    if (start > end) {
-      throw new Error('结束日期必须晚于开始日期')
-    }
-
-    const rentals = this.getRentals()
+    const response = await fetch(`${API_BASE_URL}/rentals`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        cameraId: rental.cameraId,
+        startDate: rental.startDate,
+        endDate: rental.endDate,
+        notes: rental.notes || '',
+        color: rental.color || '#409eff'
+      })
+    });
     
-    // 检查日期冲突
-    if (hasDateConflict(rentals, rental)) {
-      throw new Error('该时间段已被预约')
+    if (!response.ok) {
+      const data = await response.json();
+      throw new Error(data.error || '添加预约失败');
     }
-
-    const newRental = {
-      id: Date.now(),
-      ...rental,
-      color: rental.color || '#409eff',
-      status: 'active'
-    }
-    rentals.push(newRental)
-    localStorage.setItem('rentals', JSON.stringify(rentals))
-    return newRental
+    
+    const newRental = await response.json();
+    return {
+      id: newRental.id,
+      cameraId: newRental.camera_id,
+      startDate: newRental.start_date,
+      endDate: newRental.end_date,
+      notes: newRental.notes,
+      color: newRental.color,
+      status: newRental.status
+    };
   },
 
   // 更新预约
-  updateRental(id, updates) {
-    if (!id || !updates) {
-      throw new Error('更新信息不完整')
+  async updateRental(id, updates) {
+    if (!id) {
+      throw new Error('更新信息不完整');
     }
-
-    const rentals = this.getRentals()
-    const index = rentals.findIndex(r => r.id === id)
-    if (index > -1) {
-      // 检查日期冲突
-      if (updates.startDate || updates.endDate || updates.cameraId) {
-        const updatedRental = {
-          ...rentals[index],
-          ...updates
-        }
-        
-        // 验证日期
-        if (updatedRental.startDate && updatedRental.endDate) {
-          const start = new Date(updatedRental.startDate)
-          const end = new Date(updatedRental.endDate)
-          if (start > end) {
-            throw new Error('结束日期必须晚于或等于开始日期')
-          }
-        }
-        
-        if (hasDateConflict(rentals, updatedRental, id)) {
-          throw new Error('该时间段已被预约')
-        }
-      }
-
-      rentals[index] = {
-        ...rentals[index],
-        ...updates,
-        color: updates.color || rentals[index].color || '#409eff'
-      }
-      localStorage.setItem('rentals', JSON.stringify(rentals))
-      return rentals[index]
+    
+    // 转换字段名称以匹配后端
+    const apiUpdates = {};
+    if (updates.cameraId !== undefined) apiUpdates.cameraId = updates.cameraId;
+    if (updates.startDate !== undefined) apiUpdates.startDate = updates.startDate;
+    if (updates.endDate !== undefined) apiUpdates.endDate = updates.endDate;
+    if (updates.notes !== undefined) apiUpdates.notes = updates.notes;
+    if (updates.color !== undefined) apiUpdates.color = updates.color;
+    if (updates.status !== undefined) apiUpdates.status = updates.status;
+    
+    console.log('发送到API的更新:', apiUpdates);
+    
+    const response = await fetch(`${API_BASE_URL}/rentals/${id}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(apiUpdates)
+    });
+    
+    if (!response.ok) {
+      const data = await response.json();
+      console.error('API错误:', data);
+      throw new Error(data.error || '更新预约失败');
     }
-    return null
+    
+    const updatedRental = await response.json();
+    return {
+      id: updatedRental.id,
+      cameraId: updatedRental.camera_id,
+      startDate: updatedRental.start_date,
+      endDate: updatedRental.end_date,
+      notes: updatedRental.notes,
+      color: updatedRental.color,
+      status: updatedRental.status
+    };
   },
 
   // 取消预约
-  cancelRental(id) {
+  async cancelRental(id) {
     if (!id) {
-      throw new Error('预约ID无效')
-    }
-
-    const rentals = this.getRentals()
-    const index = rentals.findIndex(r => r.id === id)
-    if (index > -1) {
-      if (rentals[index].status === 'cancelled') {
-        throw new Error('该预约已经取消')
-      }
-      rentals[index].status = 'cancelled'
-      localStorage.setItem('rentals', JSON.stringify(rentals))
-      return true
-    }
-    throw new Error('预约不存在')
-  },
-
-  // 添加更新相机方法
-  updateCamera(id, updates) {
-    const cameras = this.getCameras()
-    const index = cameras.findIndex(c => c.id === id)
-    if (index === -1) {
-      throw new Error('相机不存在')
+      throw new Error('预约ID无效');
     }
     
-    const normalizedName = updates.name ? updates.name.trim() : cameras[index].name
+    const response = await fetch(`${API_BASE_URL}/rentals/${id}`, {
+      method: 'DELETE'
+    });
     
-    if (updates.name && cameras.some(c => c.name.toLowerCase() === normalizedName.toLowerCase() && c.id !== id)) {
-      throw new Error('相机型号已存在')
-    }
-
-    cameras[index] = {
-      ...cameras[index],
-      ...updates,
-      name: normalizedName,
+    if (!response.ok) {
+      const data = await response.json();
+      throw new Error(data.error || '取消预约失败');
     }
     
-    localStorage.setItem('cameras', JSON.stringify(cameras))
-    return cameras[index]
-  },
-} 
+    return true;
+  }
+}; 

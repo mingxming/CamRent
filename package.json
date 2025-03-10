@@ -16,7 +16,13 @@
     "@fullcalendar/resource-timeline": "^6.1.15",
     "@fullcalendar/timegrid": "^6.1.15",
     "@fullcalendar/vue3": "^6.1.15",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
     "element-plus": "^2.5.3",
+    "express": "^4.21.2",
+    "mongoose": "^8.12.1",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^5.1.7",
     "vue": "^3.3.0",
     "vue-router": "^4.0.0"
   },

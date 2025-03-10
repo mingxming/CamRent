@@ -103,11 +103,13 @@ import resourceTimelinePlugin from '@fullcalendar/resource-timeline'
 import interactionPlugin from '@fullcalendar/interaction'
 import zhCn from '@fullcalendar/core/locales/zh-cn'
 import { dataService } from '../services/dataService'
+import { API_BASE_URL } from '../services/dataService'
 import { ElLoading } from 'element-plus'
 import RentalForm from './RentalForm.vue'
 import CameraManagement from './CameraManagement.vue'
 import { authService } from '../services/authService'
 import LoginDialog from './LoginDialog.vue'
+import { formatDateToYYYYMMDD, getEndDateFromEvent } from '../utils/dateUtils'
 
 // 相机列表数据
 const cameras = ref([])
@@ -184,20 +186,20 @@ function handleLogout() {
 // 日历配置
 const calendarOptions = ref({
   plugins: [resourceTimelinePlugin, interactionPlugin],
-  initialView: 'resourceTimelineWeek',
+  initialView: 'resourceTimelineMonth',
   initialDate: new Date(),  // 设置初始日期为今天
   resources: resources,
   locale: zhCn,
   headerToolbar: {
     left: 'prev,next today',  // 允许所有用户使用导航按钮
     center: 'title',
-    right: 'resourceTimelineWeek,resourceTimelineMonth'  // 允许所有用户切换视图
+    right: 'resourceTimelineDay,resourceTimelineWeek,resourceTimelineMonth'  // 允许所有用户切换视图
   },
   selectable: computed(() => isAdmin.value),
-  editable: computed(() => isAdmin.value),
-  eventStartEditable: computed(() => isAdmin.value),
-  eventDurationEditable: computed(() => isAdmin.value),
-  eventResizableFromStart: computed(() => isAdmin.value),
+  editable: true,
+  eventStartEditable: true,
+  eventResizableFromStart: false,
+  eventDurationEditable: true,
   // 禁用日期选择
   selectConstraint: computed(() => isAdmin.value ? {
     startTime: '00:00',
@@ -205,9 +207,18 @@ const calendarOptions = ref({
   } : false),
   // 禁用事件拖拽
   eventDragStart: function(info) {
-    if (!isAdmin.value) {
-      info.preventDefault()
-      ElMessage.warning('请先登录管理员账号')
+    // 保存原始事件信息
+    const originalData = info.event.extendedProps.rentalData;
+    
+    // 计算并保存原始租期天数
+    if (originalData) {
+      const origStart = new Date(originalData.startDate);
+      const origEnd = new Date(originalData.endDate);
+      const rentalDays = Math.round((origEnd - origStart) / (1000 * 60 * 60 * 24)) + 1;
+      console.log("原始租期天数(事件开始前):", rentalDays);
+      
+      // 添加到event对象以便在移动后使用
+      info.event._preservedRentalDays = rentalDays;
     }
   },
   // 禁用事件大小调整
@@ -219,9 +230,30 @@ const calendarOptions = ref({
   },
   eventOverlap: false,
   select: handleDateSelect,
-  eventDrop: handleEventDrop,
-  eventResize: handleEventResize,
-  eventClick: handleEventClick,
+  eventDrop: function(info) {
+    console.log("FullCalendar eventDrop被触发")
+    return handleEventDrop(info)
+  },
+  eventResize: function(info) {
+    console.log("FullCalendar eventResize被触发")
+    return handleEventResize(info)
+  },
+  eventClick: function(clickInfo) {
+    if (!isAdmin.value) {
+      // 访客只能查看预约详情
+      const event = clickInfo.event
+      ElMessage({
+        type: 'info',
+        message: `预约详情：
+          开始时间：${event.startStr}
+          结束时间：${event.endStr}
+          ${event.extendedProps.notes ? `备注：${event.extendedProps.notes}` : ''}`
+      })
+      return
+    }
+    
+    handleEventClick(clickInfo);
+  },
   slotMinWidth: 30,             // 设置最小列宽
   snapDuration: { days: 1 },    // 设置拖拽吸附间隔
   height: 'auto',
@@ -280,6 +312,15 @@ const calendarOptions = ref({
   validRange: computed(() => !isAdmin.value ? {
     start: new Date().toISOString().split('T')[0] // 限制为今天及之后
   } : null),
+  eventDidMount: async function(info) {
+    // ... 任何涉及到 dataService.getRentals() 的代码都需要用 await
+  },
+  // 禁止自动更新
+  eventDataTransform: function(eventData) {
+    // 确保不自动更新事件
+    eventData._disableDefaultUpdate = true;
+    return eventData;
+  },
 })
 
 // 修改处理日期选择函数
@@ -309,7 +350,12 @@ function handleEventClick(clickInfo) {
     })
     return
   }
+  
   const event = clickInfo.event
+  
+  // 直接使用事件上的数据，不再查询
+  const rental = event.extendedProps.rentalData;
+  
   eventEditForm.value = {
     id: parseInt(event.id),  // 确保 ID 是数字类型
     startDate: event.startStr.split('T')[0],
@@ -321,104 +367,176 @@ function handleEventClick(clickInfo) {
   eventEditDialogVisible.value = true
 }
 
-// 修改事件大小改变处理函数
-async function handleEventResize(resizeInfo) {
+// 计算新的结束日期，完全避免Date对象
+function addDaysToDateString(dateString, daysToAdd) {
+  // 将日期字符串解析为年、月、日
+  const [year, month, day] = dateString.split('-').map(Number);
+  
+  // 创建日期对象（仅用于计算）
+  const date = new Date(year, month - 1, day);
+  
+  // 添加天数
+  date.setDate(date.getDate() + daysToAdd);
+  
+  // 格式化回YYYY-MM-DD格式
+  const newYear = date.getFullYear();
+  const newMonth = String(date.getMonth() + 1).padStart(2, '0');
+  const newDay = String(date.getDate()).padStart(2, '0');
+  
+  return `${newYear}-${newMonth}-${newDay}`;
+}
+
+// 完全重写事件拖拽处理函数
+async function handleEventDrop(info) {
   if (!isAdmin.value) {
-    resizeInfo.revert()
-    ElMessage.warning('请先登录管理员账号')
-    return
+    info.revert();
+    ElMessage.warning('请先登录管理员账号');
+    return;
   }
-  const { event, revert } = resizeInfo
+  
+  const { event, revert } = info;
   
   try {
-    // 获取当前预约
-    const currentRental = dataService.getRentals().find(r => r.id === parseInt(event.id))
-    if (!currentRental) {
-      throw new Error('预约不存在')
+    console.group("拖拽事件详细日志");
+    console.log("事件ID:", event.id);
+    console.log("事件开始:", event.start);
+    console.log("事件结束:", event.end);
+    
+    // 获取原始事件数据
+    const originalData = event.extendedProps.rentalData;
+    console.log("原始租赁数据:", originalData);
+    
+    // 计算原始租期天数
+    const origStart = new Date(originalData.startDate);
+    const origEnd = new Date(originalData.endDate);
+    const rentalDays = Math.round((origEnd - origStart) / (1000 * 60 * 60 * 24)) + 1;
+    console.log("原始租期天数:", rentalDays);
+    
+    // 获取新的开始日期
+    const newStartDate = event.start.toISOString().split('T')[0];
+    console.log("新开始日期:", newStartDate);
+    
+    // 在发送请求前添加更明显的日志
+    console.log(`准备调用移动端点: ${API_BASE_URL}/rentals/${event.id}/move`);
+
+    // 使用专门的移动端点来处理
+    const response = await fetch(`${API_BASE_URL}/rentals/${event.id}/move`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        newStartDate,
+        rentalDays,
+        cameraId: event.getResources()[0].id
+      })
+    });
+
+    // 在请求后添加响应状态的日志
+    console.log(`移动端点响应状态: ${response.status}`);
+    
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.error || '更新失败');
     }
     
-    // 处理日期
-    const startDate = event.startStr.split('T')[0]
+    // 获取服务器返回的更新后数据
+    const updatedRental = await response.json();
+    console.log("服务器返回的数据:", updatedRental);
     
-    // 准备更新数据
-    const updateData = {
-      startDate,
-      endDate: new Date(new Date(event.endStr).getTime() - 24 * 60 * 60 * 1000)
-        .toISOString()
-        .split('T')[0],
-      cameraId: event.getResources()[0].id,
-      notes: currentRental.notes,
-      status: currentRental.status,
-      color: currentRental.color
-    }
+    // 更新事件的扩展属性
+    event.setExtendedProp('rentalData', {
+      ...originalData,
+      startDate: updatedRental.start_date,
+      endDate: updatedRental.end_date,
+      cameraId: updatedRental.camera_id
+    });
     
-    // 更新预约
-    await dataService.updateRental(parseInt(event.id), updateData)
+    // 重新设置事件的显示日期
+    const displayEndDate = new Date(updatedRental.end_date);
+    displayEndDate.setDate(displayEndDate.getDate() + 1); // 加一天以适配FullCalendar
     
-    ElMessage.success('预约时间已更新')
+    console.log("设置事件显示日期 - 开始:", updatedRental.start_date, "结束:", displayEndDate.toISOString().split('T')[0]);
+    
+    // 静默更新事件日期，不触发新的拖拽事件
+    event.setDates(
+      updatedRental.start_date,
+      displayEndDate.toISOString().split('T')[0],
+      { allDay: true }
+    );
+    
+    console.groupEnd();
+    ElMessage.success('预约时间已更新');
   } catch (error) {
-    revert()
-    ElMessage.error(error.message || '更新预约失败')
+    console.error("拖拽更新错误:", error);
+    console.groupEnd();
+    revert(); // 重要：如果出错，恢复事件到原始位置
+    ElMessage.error(error.message || '更新预约失败');
   }
 }
 
-// 修改事件拖拽处理函数
-async function handleEventDrop(dropInfo) {
+// 类似地修改handleEventResize函数，使用专门的resize端点
+async function handleEventResize(info) {
   if (!isAdmin.value) {
-    dropInfo.revert()
-    ElMessage.warning('请先登录管理员账号')
-    return
+    info.revert();
+    ElMessage.warning('请先登录管理员账号');
+    return;
   }
-  // 直接处理事件变化，不进行日期验证
-  handleEventChange(dropInfo)
-}
-
-// 修改通用的事件改变处理函数
-async function handleEventChange(info) {
-  const { event, revert } = info
+  
+  const { event, revert } = info;
   
   try {
-    // 获取当前预约
-    const currentRental = dataService.getRentals().find(r => r.id === parseInt(event.id))
-    if (!currentRental) {
-      throw new Error('预约不存在')
+    console.group("调整大小事件");
+    
+    // 获取新的日期范围
+    const startDate = event.start.toISOString().split('T')[0];
+    
+    // FullCalendar的结束日期是排他性的(不包含)，所以需要减一天
+    const fcEndDate = new Date(event.end);
+    fcEndDate.setDate(fcEndDate.getDate() - 1);
+    const endDate = fcEndDate.toISOString().split('T')[0];
+    
+    console.log("调整后的日期范围:", startDate, "到", endDate);
+    
+    // 使用专门的调整大小端点
+    const response = await fetch(`${API_BASE_URL}/rentals/${event.id}/resize`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        startDate,
+        endDate,
+        cameraId: event.getResources()[0].id
+      })
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.error || '更新预约失败');
     }
     
-    // 处理日期，不进行时间限制
-    const startDate = event.startStr.split('T')[0]
-    let endDate
+    const updatedRental = await response.json();
+    console.log("服务器返回的数据:", updatedRental);
     
-    // 如果是拖拽改变大小，使用事件的结束时间（不需要减一天）
-    if (info.type === 'eventResize') {
-      const tempEndDate = new Date(event.end)
-      tempEndDate.setDate(tempEndDate.getDate() - 1)
-      endDate = tempEndDate.toISOString().split('T')[0]
-    } else {
-      // 如果是拖拽移动，保持原有的租赁天数
-      const originalStart = new Date(currentRental.startDate)
-      const originalEnd = new Date(currentRental.endDate)
-      const daysDiff = Math.ceil((originalEnd - originalStart) / (1000 * 60 * 60 * 24))
-      
-      const tempEndDate = new Date(startDate)
-      tempEndDate.setDate(tempEndDate.getDate() + daysDiff)
-      endDate = tempEndDate.toISOString().split('T')[0]
-    }
+    // 更新事件的内部数据
+    event.setExtendedProp('rentalData', {
+      ...event.extendedProps.rentalData,
+      startDate: updatedRental.start_date,
+      endDate: updatedRental.end_date
+    });
     
-    // 不进行日期验证，直接更新
-    await dataService.updateRental(parseInt(event.id), {
-      startDate,
-      endDate,
-      cameraId: event.getResources()[0].id
-    })
-    
-    ElMessage.success('预约时间已更新')
+    console.groupEnd();
+    ElMessage.success('预约时间已更新');
   } catch (error) {
-    revert()
-    ElMessage.error(error.message || '更新预约失败')
+    console.error("调整大小错误:", error);
+    console.groupEnd();
+    revert();
+    ElMessage.error(error.message || '更新预约失败');
   }
 }
 
-// 提交租赁时添加可编辑属性
+// 提交预约
 async function submitRental() {
   if (!rentalForm.value.startTime || !rentalForm.value.endTime) {
     ElMessage.warning('请选择租赁时间')
@@ -426,17 +544,33 @@ async function submitRental() {
   }
 
   try {
+    // 确保日期格式一致
+    const startDate = rentalForm.value.startTime;
+    const endDate = rentalForm.value.endTime;
+    
+    // 验证开始日期不晚于结束日期
+    if (new Date(startDate) > new Date(endDate)) {
+      ElMessage.warning('结束日期必须晚于或等于开始日期');
+      return;
+    }
+    
+    console.log("提交预约 - 开始:", startDate, "结束:", endDate);
+    
     const rentalData = {
       cameraId: rentalForm.value.cameraId,
-      startDate: rentalForm.value.startTime,
-      endDate: rentalForm.value.endTime,
+      startDate,
+      endDate,
       notes: rentalForm.value.notes,
       color: rentalForm.value.color || '#409eff'
     }
     
-    const newRental = dataService.addRental(rentalData)
-    const displayEndDate = new Date(newRental.endDate)
-    displayEndDate.setDate(displayEndDate.getDate() + 1)
+    const newRental = await dataService.addRental(rentalData)
+    
+    // 计算FullCalendar显示用的结束日期（排他性，所以加一天）
+    const displayEndDate = new Date(newRental.endDate);
+    displayEndDate.setDate(displayEndDate.getDate() + 1);
+    
+    console.log("新预约显示 - 结束:", displayEndDate.toISOString().split('T')[0]);
 
     const newEvent = {
       id: newRental.id,
@@ -449,7 +583,11 @@ async function submitRental() {
       notes: rentalForm.value.notes,
       backgroundColor: newRental.color,
       borderColor: newRental.color,
-      textColor: '#ffffff'
+      textColor: '#ffffff',
+      rentalData: {
+        ...newRental,
+        actualEndDate: newRental.endDate
+      }
     }
     
     const calendarApi = calendarRef.value.getApi()
@@ -478,25 +616,61 @@ function showCameraManagement() {
 }
 
 // 处理相机更新
-async function handleCameraUpdate({ type, camera }) {
+async function handleCameraUpdate(action) {
   try {
-    switch (type) {
-      case 'add':
-        await dataService.addCamera(camera)
-        break
-      case 'update':
-        await dataService.updateCamera(camera.id, camera)
-        break
-      case 'delete':
-        await dataService.deleteCamera(camera.id)
-        break
-      case 'visibility':
-        await dataService.updateCamera(camera.id, { visible: camera.visible })
-        break
+    if (action.type === 'add') {
+      const newCamera = await dataService.addCamera(action.camera)
+      cameras.value.push(newCamera)
+      resources.value.push({
+        id: newCamera.id,
+        title: newCamera.name
+      })
+      
+      // 更新日历资源
+      const calendarApi = calendarRef.value.getApi()
+      calendarApi.setOption('resources', resources.value)
+    } else if (action.type === 'update') {
+      const { camera } = action
+      await dataService.updateCamera(camera.id, {
+        name: camera.name,
+        link: camera.link
+      })
+      
+      // 更新本地数据
+      const index = cameras.value.findIndex(c => c.id === camera.id)
+      if (index > -1) {
+        cameras.value[index].name = camera.name
+        cameras.value[index].link = camera.link
+      }
+      
+      // 更新资源
+      const resourceIndex = resources.value.findIndex(r => r.id === camera.id)
+      if (resourceIndex > -1) {
+        resources.value[resourceIndex].title = camera.name
+      }
+      
+      // 更新日历资源
+      const calendarApi = calendarRef.value.getApi()
+      calendarApi.setOption('resources', resources.value)
+      calendarApi.render() // 强制渲染
+    } else if (action.type === 'delete') {
+      const { camera } = action
+      await dataService.deleteCamera(camera.id)
+      
+      // 更新本地数据
+      cameras.value = cameras.value.filter(c => c.id !== camera.id)
+      resources.value = resources.value.filter(r => r.id !== camera.id)
+      
+      // 更新日历资源
+      const calendarApi = calendarRef.value.getApi()
+      calendarApi.setOption('resources', resources.value)
+      calendarApi.render() // 强制渲染
+      
+      // 重新获取预约数据
+      await fetchRentals()
     }
-    await fetchCameras() // 刷新相机列表
-    await fetchRentals() // 刷新预约记录
   } catch (error) {
+    ElMessage.error(error.message || '操作失败')
     throw error
   }
 }
@@ -505,16 +679,18 @@ async function handleCameraUpdate({ type, camera }) {
 async function fetchCameras() {
   isLoading.value = true
   try {
-    cameras.value = dataService.getCameras()
+    cameras.value = await dataService.getCameras()
     // 简化资源创建
     resources.value = cameras.value.map(camera => ({
       id: camera.id,
-      title: camera.name  // 使用相机名称作为标题
+      title: camera.name
     }))
     
-    const calendarApi = calendarRef.value.getApi()
-    calendarApi.setOption('resources', [])
-    calendarApi.setOption('resources', resources.value)
+    const calendarApi = calendarRef.value?.getApi()
+    if (calendarApi) {
+      calendarApi.setOption('resources', [])
+      calendarApi.setOption('resources', resources.value)
+    }
   } catch (error) {
     ElMessage.error(error.message || '获取相机列表失败')
     errorMessage.value = error.message
@@ -527,30 +703,58 @@ async function fetchCameras() {
 async function fetchRentals() {
   isLoading.value = true
   try {
-    const rentals = dataService.getRentals()
-    const calendarApi = calendarRef.value.getApi()
-    calendarApi.removeAllEvents()
-    rentals.forEach(rental => {
-      if (rental.status === 'active') {
-        const displayEndDate = new Date(rental.endDate)
-        displayEndDate.setDate(displayEndDate.getDate() + 1)
-        
-        calendarApi.addEvent({
-          id: rental.id,
-          title: rental.notes || '已预约',
-          start: rental.startDate,
-          end: displayEndDate.toISOString().split('T')[0],
-          resourceId: rental.cameraId,
-          editable: true,
-          notes: rental.notes,
-          backgroundColor: rental.color || '#409eff',
-          borderColor: rental.color || '#409eff',
-          textColor: '#ffffff'
-        })
-      }
-    })
+    const rentals = await dataService.getRentals()
+    console.log("从服务器获取的租赁:", rentals);
+    
+    const calendarApi = calendarRef.value?.getApi()
+    if (calendarApi) {
+      calendarApi.removeAllEvents()
+      rentals.forEach(rental => {
+        if (rental.status === 'active') {
+          // 计算日期差
+          const rawStartDate = new Date(rental.startDate);
+          const rawEndDate = new Date(rental.endDate);
+          const daysDiff = Math.round((rawEndDate - rawStartDate) / (1000 * 60 * 60 * 24)) + 1;
+          
+          console.log(`租赁ID ${rental.id}: ${rental.startDate} 到 ${rental.endDate}，共 ${daysDiff} 天`);
+          
+          // FullCalendar需要排他性(exclusive)结束日期，所以加一天
+          const displayEndDate = new Date(rental.endDate);
+          displayEndDate.setDate(displayEndDate.getDate() + 1);
+          
+          console.log(`  显示日期: ${rental.startDate} 到 ${displayEndDate.toISOString().split('T')[0]}`);
+          
+          const rentalData = {
+            id: rental.id,
+            cameraId: rental.cameraId,
+            startDate: rental.startDate,
+            endDate: rental.endDate,
+            notes: rental.notes,
+            color: rental.color,
+            status: rental.status,
+            // 保存原始天数供移动时使用
+            originalDays: daysDiff
+          };
+          
+          calendarApi.addEvent({
+            id: rental.id,
+            title: rental.notes || '已预约',
+            start: rental.startDate,
+            end: displayEndDate.toISOString().split('T')[0],
+            resourceId: rental.cameraId,
+            backgroundColor: rental.color,
+            borderColor: rental.color,
+            allDay: true,
+            editable: true,
+            notes: rental.notes,
+            // 存储实际的开始和结束日期以及天数
+            rentalData: rentalData
+          })
+        }
+      })
+    }
   } catch (error) {
-    ElMessage.error(error.message || '获取预约记录失败')
+    ElMessage.error(error.message || '获取预约列表失败')
     errorMessage.value = error.message
   } finally {
     isLoading.value = false
@@ -560,61 +764,79 @@ async function fetchRentals() {
 // 更新事件
 async function updateEvent() {
   try {
-    const { id, startDate, endDate, notes, color, event } = eventEditForm.value
+    const startDate = eventEditForm.value.startDate;
+    const endDate = eventEditForm.value.endDate;
     
-    // 更新数据
-    const updateData = {
+    console.log("表单更新 - 开始:", startDate, "结束:", endDate);
+    
+    // 更新预约
+    await dataService.updateRental(eventEditForm.value.id, {
       startDate,
       endDate,
-      notes,
-      color,
-      cameraId: event.getResources()[0].id,
-      status: 'active'
-    }
+      notes: eventEditForm.value.notes,
+      color: eventEditForm.value.color
+    })
     
-    dataService.updateRental(id, updateData)
+    // 更新UI
+    const event = eventEditForm.value.event
+    event.setProp('title', eventEditForm.value.notes || '已预约')
+    event.setProp('backgroundColor', eventEditForm.value.color)
+    event.setProp('borderColor', eventEditForm.value.color)
+    event.setExtendedProp('notes', eventEditForm.value.notes)
     
-    // 更新事件显示
-    const displayEndDate = new Date(endDate)
-    displayEndDate.setDate(displayEndDate.getDate() + 1)
+    // 更新事件的内部数据
+    event.setExtendedProp('rentalData', {
+      ...event.extendedProps.rentalData,
+      startDate,
+      endDate,
+      actualEndDate: endDate,
+      notes: eventEditForm.value.notes,
+      color: eventEditForm.value.color
+    });
     
-    event.setDates(startDate, displayEndDate.toISOString().split('T')[0])
-    event.setProp('title', notes || '已预约')
-    if (color) {
-      event.setProp('backgroundColor', color)
-      event.setProp('borderColor', color)
-    }
-    event.setExtendedProp('notes', notes)
+    // 为显示设置排他性结束日期（加一天）
+    const newStartDate = new Date(startDate);
+    const newEndDate = new Date(endDate);
+    newEndDate.setDate(newEndDate.getDate() + 1); // 对结束日期加1天
+    
+    event.setDates(
+      newStartDate,
+      newEndDate,
+      { allDay: true }
+    )
     
     eventEditDialogVisible.value = false
-    ElMessage.success('预约已更新')
+    ElMessage.success('更新成功')
   } catch (error) {
-    ElMessage.error(error.message || '更新预约失败')
+    ElMessage.error(error.message || '更新失败')
   }
 }
 
-// 修改取消预约函数
+// 取消预约
 async function cancelRental() {
   try {
-    const { id, event } = eventEditForm.value
+    await ElMessageBox.confirm(
+      '确定要取消这个预约吗？',
+      '取消确认',
+      {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
     
-    // 确保 id 是数字类型
-    const rentalId = parseInt(id)
+    await dataService.cancelRental(eventEditForm.value.id)
     
-    // 检查预约是否存在
-    const rental = dataService.getRentals().find(r => r.id === rentalId)
-    if (!rental) {
-      throw new Error('预约不存在')
-    }
-    
-    // 直接取消预约，不需要确认
-    await dataService.cancelRental(rentalId)
+    // 移除事件
+    const event = eventEditForm.value.event
     event.remove()
+    
     eventEditDialogVisible.value = false
     ElMessage.success('预约已取消')
   } catch (error) {
-    console.error('取消预约错误:', error, '预约ID:', id)  // 添加错误日志
-    ElMessage.error(error.message || '取消预约失败')
+    if (error !== 'cancel') {
+      ElMessage.error(error.message || '取消预约失败')
+    }
   }
 }
 
@@ -627,11 +849,55 @@ function handleViewChange(view) {
   return true
 }
 
-// 在组件挂载后初始化日历和加载初始事件
+// 添加测试函数 - 在初始化时直接创建一个测试事件
+async function addTestEvent() {
+  try {
+    // 首先确保有至少一个相机
+    if (cameras.value.length === 0) {
+      await fetchCameras();
+    }
+    
+    // 创建一个测试预约数据，有确定的5天租期（12月20日到12月24日）
+    const testRental = {
+      cameraId: cameras.value[0].id, // 使用第一个相机
+      startDate: '2024-12-20',
+      endDate: '2024-12-24',
+      notes: '测试5天租期',
+      color: '#f56c6c'
+    };
+    
+    console.log("创建测试预约:", testRental);
+    
+    // 直接提交到数据库
+    const newRental = await dataService.addRental(testRental);
+    
+    console.log("新测试预约:", newRental);
+    
+    // 计算租期天数
+    const rentalDays = 
+      (new Date(testRental.endDate) - new Date(testRental.startDate)) / 
+      (1000 * 60 * 60 * 24) + 1;
+    
+    console.log("测试预约天数:", rentalDays);
+    
+    // 刷新日历
+    await fetchRentals();
+    
+    return newRental;
+  } catch (error) {
+    console.error("创建测试预约失败:", error);
+    ElMessage.error("创建测试预约失败");
+    return null;
+  }
+}
+
+// 在 mounted 钩子中调用此测试函数
 onMounted(async () => {
   const calendarApi = calendarRef.value.getApi()
   await fetchCameras()
   await fetchRentals()
+  // 如果需要，取消注释下一行来添加测试事件
+  // await addTestEvent();
   // 强制更新视图
   calendarApi.updateSize()
 })
@@ -646,6 +912,54 @@ function renderEvent(info) {
     eventEl.classList.remove('fc-event-resizable')
   }
 }
+
+// 添加临时应急处理函数 - 完全忽略错误，强制更新数据库
+async function emergencyUpdateRental(event) {
+  try {
+    // 直接访问SQLite API端点强制更新
+    const response = await fetch(`http://localhost:3000/api/emergency-update/${event.id}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        start_date: event.start.toISOString().split('T')[0],
+        end_date: event.start.toISOString().split('T')[0], // 强制设置为同一天
+        camera_id: event.getResources()[0].id,
+      }),
+    });
+    
+    if (!response.ok) {
+      throw new Error('紧急更新失败');
+    }
+    
+    ElMessage.success('已成功更新预约');
+    return true;
+  } catch (error) {
+    console.error('紧急更新失败:', error);
+    ElMessage.error('紧急更新失败，请尝试刷新页面');
+    return false;
+  }
+}
+
+// 在服务器上添加紧急更新端点
+app.post('/api/emergency-update/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { start_date, end_date, camera_id } = req.body;
+    
+    // 直接执行SQL更新，跳过所有验证
+    await db.run(
+      'UPDATE rentals SET start_date = ?, end_date = ?, camera_id = ? WHERE id = ?',
+      [start_date, end_date, camera_id, id]
+    );
+    
+    res.json({ success: true });
+  } catch (error) {
+    console.error('紧急更新错误:', error);
+    res.status(500).json({ error: '紧急更新失败' });
+  }
+});
 </script>
 
 <style>

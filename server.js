@@ -21,13 +21,30 @@ app.use(express.static(join(__dirname, 'dist')));
 // 创建数据库连接
 let db;
 async function setupDatabase() {
+  // 确保数据目录存在
+  if (process.env.NODE_ENV === 'production') {
+    try {
+      const { mkdirSync } = await import('fs');
+      mkdirSync('/data', { recursive: true });
+      console.log('确保/data目录存在');
+    } catch (err) {
+      console.log('读取/data目录状态:', err.message);
+    }
+  }
+
   // 打开数据库连接
-  db = await open({
-    filename: process.env.NODE_ENV === 'production'
-      ? '/data/camera_rental.db'
-      : join(__dirname, 'camera_rental.db'),
-    driver: sqlite3.Database
-  });
+  try {
+    db = await open({
+      filename: process.env.NODE_ENV === 'production'
+        ? ':memory:'  // 临时使用内存数据库
+        : join(__dirname, 'camera_rental.db'),
+      driver: sqlite3.Database
+    });
+    console.log('数据库连接成功:', db.filename);
+  } catch (error) {
+    console.error('数据库连接错误:', error);
+    throw error;
+  }
 
   // 创建相机表
   await db.exec(`

@@ -91,11 +91,18 @@
       v-model:visible="loginDialogVisible"
       @login-success="handleLoginSuccess"
     />
+
+    <!-- 添加错误状态显示 -->
+    <div v-if="loadError" class="error-container">
+      <h2>加载日历时出错</h2>
+      <p>{{ loadError }}</p>
+      <el-button @click="retryLoading">重试</el-button>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Setting, Check, User, SwitchButton } from '@element-plus/icons-vue'
 import FullCalendar from '@fullcalendar/vue3'
@@ -170,6 +177,9 @@ const eventEditForm = ref({
   color: '#409eff',
   event: null // 存储当前编辑的事件对象
 })
+
+// 添加加载错误状态
+const loadError = ref(null);
 
 // 处理登录成功
 function handleLoginSuccess() {
@@ -677,25 +687,21 @@ async function handleCameraUpdate(action) {
 
 // 获取所有相机
 async function fetchCameras() {
-  isLoading.value = true
+  isLoading.value = true;
   try {
-    cameras.value = await dataService.getCameras()
-    // 简化资源创建
+    cameras.value = await dataService.getCameras();
+    // 格式化资源数据
     resources.value = cameras.value.map(camera => ({
       id: camera.id,
       title: camera.name
-    }))
-    
-    const calendarApi = calendarRef.value?.getApi()
-    if (calendarApi) {
-      calendarApi.setOption('resources', [])
-      calendarApi.setOption('resources', resources.value)
-    }
+    }));
+    return cameras.value;
   } catch (error) {
-    ElMessage.error(error.message || '获取相机列表失败')
-    errorMessage.value = error.message
+    console.error('获取相机列表失败:', error);
+    loadError.value = `获取相机列表失败: ${error.message}`;
+    throw error;
   } finally {
-    isLoading.value = false
+    isLoading.value = false;
   }
 }
 
@@ -893,13 +899,29 @@ async function addTestEvent() {
 
 // 在 mounted 钩子中调用此测试函数
 onMounted(async () => {
-  const calendarApi = calendarRef.value.getApi()
+  // 添加安全检查，确保calendarRef.value存在
+  const calendarApi = calendarRef.value?.getApi()
+  if (!calendarApi) {
+    console.warn('日历API尚未准备好，稍后将重试');
+    // 添加延迟初始化
+    setTimeout(() => {
+      if (calendarRef.value) {
+        const api = calendarRef.value.getApi();
+        if (api) {
+          api.updateSize();
+          console.log('日历API已延迟初始化');
+        }
+      }
+    }, 500);
+  }
+  
   await fetchCameras()
   await fetchRentals()
-  // 如果需要，取消注释下一行来添加测试事件
-  // await addTestEvent();
-  // 强制更新视图
-  calendarApi.updateSize()
+  
+  // 仅在API可用时更新视图
+  if (calendarApi) {
+    calendarApi.updateSize()
+  }
 })
 
 // 修改事件渲染
@@ -942,24 +964,27 @@ async function emergencyUpdateRental(event) {
   }
 }
 
-// 在服务器上添加紧急更新端点
-app.post('/api/emergency-update/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { start_date, end_date, camera_id } = req.body;
-    
-    // 直接执行SQL更新，跳过所有验证
-    await db.run(
-      'UPDATE rentals SET start_date = ?, end_date = ?, camera_id = ? WHERE id = ?',
-      [start_date, end_date, camera_id, id]
-    );
-    
-    res.json({ success: true });
-  } catch (error) {
-    console.error('紧急更新错误:', error);
-    res.status(500).json({ error: '紧急更新失败' });
-  }
-});
+// 使用fetch或axios等前端API调用方式
+async function handleEventMove(id, data) {
+  const response = await fetch(`${API_BASE_URL}/rentals/${id}/move`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(data)
+  });
+  return await response.json();
+}
+
+// 添加重试函数
+function retryLoading() {
+  loadError.value = null;
+  nextTick(() => {
+    fetchCameras().catch(err => {
+      loadError.value = `获取相机数据失败: ${err.message}`;
+    });
+  });
+}
 </script>
 
 <style>

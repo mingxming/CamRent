@@ -124,7 +124,8 @@ const rentalForm = ref({
   cameraId: '',
   startTime: '',
   endTime: '',
-  notes: ''
+  notes: '',
+  color: '#409eff'
 })
 
 // 相机管理相关的状态
@@ -184,6 +185,7 @@ function handleLogout() {
 const calendarOptions = ref({
   plugins: [resourceTimelinePlugin, interactionPlugin],
   initialView: 'resourceTimelineWeek',
+  initialDate: new Date(),  // 设置初始日期为今天
   resources: resources,
   locale: zhCn,
   headerToolbar: {
@@ -216,9 +218,6 @@ const calendarOptions = ref({
     }
   },
   eventOverlap: false,
-  eventConstraint: {
-    start: new Date().toISOString().split('T')[0],
-  },
   select: handleDateSelect,
   eventDrop: handleEventDrop,
   eventResize: handleEventResize,
@@ -276,7 +275,11 @@ const calendarOptions = ref({
         { weekday: 'narrow' }
       ]
     }
-  }
+  },
+  // 游客只能看到今天及之后的日期，管理员无限制
+  validRange: computed(() => !isAdmin.value ? {
+    start: new Date().toISOString().split('T')[0] // 限制为今天及之后
+  } : null),
 })
 
 // 修改处理日期选择函数
@@ -366,6 +369,7 @@ async function handleEventDrop(dropInfo) {
     ElMessage.warning('请先登录管理员账号')
     return
   }
+  // 直接处理事件变化，不进行日期验证
   handleEventChange(dropInfo)
 }
 
@@ -380,7 +384,7 @@ async function handleEventChange(info) {
       throw new Error('预约不存在')
     }
     
-    // 处理日期
+    // 处理日期，不进行时间限制
     const startDate = event.startStr.split('T')[0]
     let endDate
     
@@ -400,30 +404,14 @@ async function handleEventChange(info) {
       endDate = tempEndDate.toISOString().split('T')[0]
     }
     
-    // 准备更新数据
-    const updateData = {
+    // 不进行日期验证，直接更新
+    await dataService.updateRental(parseInt(event.id), {
       startDate,
       endDate,
-      cameraId: event.getResources()[0].id,
-      notes: currentRental.notes,
-      status: currentRental.status
-    }
-
-    // 更新预约
-    dataService.updateRental(parseInt(event.id), updateData)
-
-    // 直接使用 event.setDates 来更新显示，而不是刷新所有数据
-    event.setDates(
-      startDate,
-      new Date(endDate + 'T00:00:00').getTime() + 24 * 60 * 60 * 1000, // 显示时需要加回一天
-      { allDay: true }
-    )
-
-    ElMessage({
-      message: '预约时间已更新',
-      type: 'success',
-      duration: 2000
+      cameraId: event.getResources()[0].id
     })
+    
+    ElMessage.success('预约时间已更新')
   } catch (error) {
     revert()
     ElMessage.error(error.message || '更新预约失败')
@@ -442,7 +430,8 @@ async function submitRental() {
       cameraId: rentalForm.value.cameraId,
       startDate: rentalForm.value.startTime,
       endDate: rentalForm.value.endTime,
-      notes: rentalForm.value.notes
+      notes: rentalForm.value.notes,
+      color: rentalForm.value.color || '#409eff'
     }
     
     const newRental = dataService.addRental(rentalData)
@@ -458,8 +447,8 @@ async function submitRental() {
       allDay: true,
       editable: true,
       notes: rentalForm.value.notes,
-      backgroundColor: '#409eff',
-      borderColor: '#409eff',
+      backgroundColor: newRental.color,
+      borderColor: newRental.color,
       textColor: '#ffffff'
     }
     
@@ -474,7 +463,8 @@ async function submitRental() {
       cameraId: '',
       startTime: '',
       endTime: '',
-      notes: ''
+      notes: '',
+      color: '#409eff'
     }
   } catch (error) {
     ElMessage.error(error.message || '预约失败，请重试')

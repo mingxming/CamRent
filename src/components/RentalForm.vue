@@ -4,11 +4,18 @@
       <el-date-picker
         v-model="form.startTime"
         type="date"
-        placeholder="选择日期"
+        placeholder="开始时间"
         value-format="YYYY-MM-DD"
         @update:model-value="updateEndDate"
       />
-      <span class="date-hint">默认租赁一天</span>
+      <el-date-picker
+        v-model="form.endTime"
+        type="date"
+        placeholder="结束时间"
+        value-format="YYYY-MM-DD"
+        :min-date="form.startTime"
+      />
+      <span class="date-hint">选择同一天表示租赁一天</span>
     </el-form-item>
     <el-form-item label="备注">
       <el-input
@@ -71,10 +78,13 @@ watch(form, (newValue) => {
   emit('update:form', newValue)
 }, { deep: true })
 
-// 添加新函数，当开始日期变化时自动更新结束日期
+// 当开始日期变化时自动更新结束日期（但仅在结束日期为空或早于新的开始日期时）
 function updateEndDate(date) {
   if (date) {
-    form.value.endTime = date
+    // 如果结束日期为空或早于开始日期，则设置为与开始日期相同
+    if (!form.value.endTime || new Date(form.value.endTime) < new Date(date)) {
+      form.value.endTime = date
+    }
   }
 }
 </script>

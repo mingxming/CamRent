@@ -1,4 +1,4 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHistory, createWebHashHistory } from 'vue-router'
 
 const routes = [
   {
@@ -13,7 +13,9 @@ const routes = [
 ]
 
 const router = createRouter({
-  history: createWebHistory(),
+  history: process.env.NODE_ENV === 'production' 
+    ? createWebHashHistory()  // 生产环境使用hash模式，避免服务器路由问题
+    : createWebHistory(),
   routes
 })
 

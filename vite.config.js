@@ -10,10 +10,14 @@ export default defineConfig({
     }
   },
   build: {
+    assetsDir: 'assets',
+    outDir: 'dist',
+    emptyOutDir: true,
     rollupOptions: {
       input: {
         main: path.resolve(__dirname, 'index.html')
       }
     }
-  }
+  },
+  base: './'
 }) 

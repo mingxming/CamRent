@@ -16,7 +16,10 @@ const __dirname = dirname(__filename);
 // 中间件
 app.use(cors());
 app.use(express.json());
-app.use(express.static(join(__dirname, 'dist')));
+app.use(express.static(join(__dirname, 'dist'), {
+  maxAge: '1y',  // 启用长期缓存
+  etag: true
+}));
 
 // 创建数据库连接
 let db;
@@ -455,17 +458,58 @@ app.post('/api/rentals/:id/resize', async (req, res) => {
   }
 });
 
-// 前端路由支持
+// 确保API路由优先处理
+app.get('/api/*', (req, res) => {
+  res.status(404).json({ error: 'API endpoint not found' });
+});
+
+// 所有其他GET请求都返回index.html，使客户端路由工作
 app.get('*', (req, res) => {
+  console.log('提供前端页面:', req.url);
   res.sendFile(join(__dirname, 'dist', 'index.html'));
+});
+
+// 添加健康检查端点
+app.get('/health', (req, res) => {
+  res.status(200).send(`
+    <html>
+      <head><title>服务器状态</title></head>
+      <body>
+        <h1>服务器正常运行！</h1>
+        <p>时间: ${new Date().toISOString()}</p>
+        <p>环境: ${process.env.NODE_ENV || 'development'}</p>
+        <p><a href="/">返回主页</a></p>
+      </body>
+    </html>
+  `);
 });
 
 // 启动服务器
 (async function() {
   try {
     await setupDatabase();
+    
+    // 记录当前环境和目录信息
+    console.log('NODE_ENV:', process.env.NODE_ENV);
+    console.log('__dirname:', __dirname);
+    console.log('静态文件目录:', join(__dirname, 'dist'));
+    
+    // 检查dist目录是否存在并列出其内容
+    try {
+      const { readdirSync, existsSync } = await import('fs');
+      const distPath = join(__dirname, 'dist');
+      if (existsSync(distPath)) {
+        console.log('dist目录内容:', readdirSync(distPath));
+      } else {
+        console.log('警告: dist目录不存在!');
+      }
+    } catch (err) {
+      console.log('无法读取dist目录:', err.message);
+    }
+    
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
+      console.log(`访问地址: http://localhost:${PORT}`);
     });
   } catch (error) {
     console.error('Failed to start server:', error);
